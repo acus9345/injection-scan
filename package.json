@@ -1,0 +1,63 @@
+{
+  "name": "injection-scan",
+  "version": "0.1.0",
+  "description": "Flag prompt-injection attempts in tool results, web pages and files before an AI agent reads them. Hidden-text detection, sanitizing and wrapping helpers. Zero dependencies.",
+  "keywords": [
+    "prompt-injection",
+    "llm",
+    "ai",
+    "agent",
+    "security",
+    "jailbreak",
+    "guardrails",
+    "sanitize",
+    "mcp",
+    "tool-calling"
+  ],
+  "homepage": "https://github.com/acus9345/injection-scan#readme",
+  "bugs": {
+    "url": "https://github.com/acus9345/injection-scan/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/acus9345/injection-scan.git"
+  },
+  "license": "MIT",
+  "author": "acus9345 <acus9345@gmail.com>",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "injection-scan": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "npm run clean && tsc -p tsconfig.build.json",
+    "prelint": "npm run build",
+    "lint": "tsc -p tsconfig.json",
+    "pretest": "npm run build",
+    "test": "node --test \"test/*.test.ts\"",
+    "prepack": "npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "typescript": "^7.0.2"
+  }
+}
