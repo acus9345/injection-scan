@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { readFileSync } from "node:fs";
+import { text } from "node:stream/consumers";
 import { parseArgs } from "node:util";
 import { sanitize, scan, type ScanResult, type Severity } from "./index.js";
 
@@ -37,8 +38,8 @@ function version(): string {
   return pkg.version;
 }
 
-function readInput(path: string): string {
-  if (path === "-") return readFileSync(0, "utf8");
+async function readInput(path: string, readStdin: () => Promise<string>): Promise<string> {
+  if (path === "-") return readStdin();
   try {
     return readFileSync(path, "utf8");
   } catch (error) {
@@ -64,7 +65,7 @@ function report(name: string, result: ScanResult): string {
   return lines.join("\n");
 }
 
-function run(argv: readonly string[]): number {
+async function run(argv: readonly string[]): Promise<number> {
   let parsed;
   try {
     parsed = parseArgs({
@@ -104,15 +105,18 @@ function run(argv: readonly string[]): number {
     return 2;
   }
 
+  let stdinPromise: Promise<string> | undefined;
+  const readStdin = () => (stdinPromise ??= text(process.stdin));
+
   if (values.sanitize) {
-    for (const file of files) process.stdout.write(sanitize(readInput(file)));
+    for (const file of files) process.stdout.write(sanitize(await readInput(file, readStdin)));
     return 0;
   }
 
   let failed = false;
   const results: { file: string; result: ScanResult }[] = [];
   for (const file of files) {
-    const result = scan(readInput(file), { threshold: threshold as Severity, disable });
+    const result = scan(await readInput(file, readStdin), { threshold: threshold as Severity, disable });
     if (result.flagged) failed = true;
     results.push({ file: file === "-" ? "stdin" : file, result });
   }
@@ -126,7 +130,7 @@ function run(argv: readonly string[]): number {
 }
 
 try {
-  process.exitCode = run(process.argv.slice(2));
+  process.exitCode = await run(process.argv.slice(2));
 } catch (error) {
   if (error instanceof UsageError) {
     process.stderr.write(`injection-scan: ${error.message}\nRun "injection-scan --help" for usage.\n`);

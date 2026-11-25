@@ -78,7 +78,7 @@ export function scan(text: string, options: ScanOptions = {}): ScanResult {
   const threshold = options.threshold ?? "medium";
   const disabled = new Set(options.disable ?? []);
   const rules = [...RULES, ...(options.rules ?? [])].filter((r) => !disabled.has(r.id) && !disabled.has(r.category));
-  const maxFindings = options.maxFindings ?? 100;
+  const maxFindings = Math.max(0, options.maxFindings ?? 100);
   const decode = options.decode ?? true;
   const lines = lineStarts(input);
 
@@ -123,13 +123,15 @@ export function scan(text: string, options: ScanOptions = {}): ScanResult {
     }
   }
 
-  const findings = dedupe(raw)
-    .sort((a, b) => a.start - b.start || RANK[b.severity] - RANK[a.severity])
+  const allDeduped = dedupe(raw);
+  const risk = overallRisk(allDeduped);
+  const score = Math.min(100, allDeduped.reduce((sum, f) => sum + WEIGHT[f.severity], 0));
+  const findings = allDeduped
+    .sort((a, b) => RANK[b.severity] - RANK[a.severity] || a.start - b.start)
     .slice(0, maxFindings)
+    .sort((a, b) => a.start - b.start || RANK[b.severity] - RANK[a.severity])
     .map((f) => ({ ...f, ...position(lines, f.start) }));
 
-  const risk = overallRisk(findings);
-  const score = Math.min(100, findings.reduce((sum, f) => sum + WEIGHT[f.severity], 0));
   return { flagged: RANK[risk] >= RANK[threshold], risk, score, findings };
 }
 
@@ -155,7 +157,7 @@ export function sanitize(text: string, options: SanitizeOptions = {}): string {
   let out = String(text);
   if (options.stripHiddenElements ?? true) {
     const regions = hiddenRegions(out).filter((r) => r.by === "hidden-element");
-    for (const r of regions.reverse()) out = out.slice(0, r.start) + out.slice(r.end);
+    for (const r of mergeRegions(regions).reverse()) out = out.slice(0, r.start) + out.slice(r.end);
   }
   if (options.stripComments ?? true) {
     out = out.replace(/<!--[\s\S]*?(?:-->|$)/g, "").replace(MARKDOWN_COMMENT, "");
@@ -235,42 +237,66 @@ const MARKDOWN_COMMENT = /^[ \t]*\[(?:\/\/|comment|_)\]:[ \t]*(?:#|<>)[ \t]*\((?
 const HIDDEN_STYLE =
   /display\s*:\s*none|visibility\s*:\s*hidden|font-size\s*:\s*0(?:\.0+)?(?:px|em|rem|pt|%)?\s*(?:;|$|!)|opacity\s*:\s*0(?:\.0+)?\s*(?:;|$|!)|(?:^|[;\s])(?:width|height)\s*:\s*0(?:px)?\s*(?:;|$|!)[^"']*(?:overflow\s*:\s*hidden)|left\s*:\s*-\d{4,}px|text-indent\s*:\s*-\d{4,}px|clip\s*:\s*rect\(\s*0/i;
 
+const VOID_ELEMENTS = new Set([
+  "area", "base", "br", "col", "embed", "hr", "img",
+  "input", "link", "meta", "param", "source", "track", "wbr",
+]);
+
 interface Region {
   start: number;
   end: number;
   by: HiddenBy;
 }
 
+function inRegion(index: number, regions: readonly Region[]): boolean {
+  return regions.some((r) => index >= r.start && index < r.end);
+}
+
+function mergeRegions(regions: readonly Region[]): Region[] {
+  const merged: Region[] = [];
+  for (const r of regions) {
+    const prev = merged[merged.length - 1];
+    if (prev && r.start <= prev.end) prev.end = Math.max(prev.end, r.end);
+    else merged.push({ ...r });
+  }
+  return merged;
+}
+
 function hiddenRegions(input: string): Region[] {
   const regions: Region[] = [];
+  const comments: Region[] = [];
   for (const m of input.matchAll(/<!--[\s\S]*?(?:-->|$)/g)) {
-    regions.push({ start: m.index, end: m.index + m[0].length, by: "html-comment" });
+    const region: Region = { start: m.index, end: m.index + m[0].length, by: "html-comment" };
+    comments.push(region);
+    regions.push(region);
   }
   for (const m of input.matchAll(MARKDOWN_COMMENT)) {
     regions.push({ start: m.index, end: m.index + m[0].length, by: "markdown-comment" });
   }
   const open = /<([a-z][a-z0-9-]*)\b([^<>]*)>/gi;
   for (const m of input.matchAll(open)) {
+    if (inRegion(m.index, comments)) continue;
     const [, name, attrs] = m;
     if (!name || attrs === undefined) continue;
     const style = /\bstyle\s*=\s*(?:"([^"]*)"|'([^']*)')/i.exec(attrs);
     const css = style ? (style[1] ?? style[2] ?? "") : "";
     const hiddenAttr = /(?:^|\s)(?:hidden(?:\s|=|$)|aria-hidden\s*=\s*["']?true)/i.test(attrs);
     if (!hiddenAttr && !HIDDEN_STYLE.test(css)) continue;
-    if (attrs.trimEnd().endsWith("/")) continue;
+    if (attrs.trimEnd().endsWith("/") || VOID_ELEMENTS.has(name.toLowerCase())) continue;
     const start = m.index;
-    const end = closingTagEnd(input, name, start + m[0].length);
+    const end = closingTagEnd(input, name, start + m[0].length, comments);
     regions.push({ start, end, by: "hidden-element" });
   }
   return regions;
 }
 
 /** Find the end of the element that opened at `from`, counting nested tags of the same name. */
-function closingTagEnd(input: string, name: string, from: number): number {
+function closingTagEnd(input: string, name: string, from: number, comments: readonly Region[]): number {
   const tags = new RegExp(`<(/?)${name}\\b[^<>]*>`, "gi");
   tags.lastIndex = from;
   let depth = 1;
   for (let m = tags.exec(input); m; m = tags.exec(input)) {
+    if (inRegion(m.index, comments)) continue;
     if (m[1] === "/") depth--;
     else if (!m[0].endsWith("/>")) depth++;
     if (depth === 0) return m.index + m[0].length;
@@ -367,19 +393,41 @@ function invisibleCharFindings(input: string, disabled: ReadonlySet<string>): Ra
 }
 
 function precededByBlackFlag(input: string, i: number): boolean {
-  // Walk back over tag characters to the base character.
+  // Walk back over tag characters (stopping at any cancel tag) to the base character.
   let j = i;
-  while (j >= 2 && isTagChar(input.codePointAt(j - 2)!)) j -= 2;
+  while (j >= 2) {
+    const prev = input.codePointAt(j - 2)!;
+    if (!isTagChar(prev) || prev === 0xe007f) break;
+    j -= 2;
+  }
   return input.codePointAt(j - 2) === 0x1f3f4;
 }
 
 const PICTOGRAPHIC = /\p{Extended_Pictographic}/u;
 
+function prevCodePoint(input: string, index: number): { cp: number; start: number } | undefined {
+  if (index <= 0) return undefined;
+  const last = input.charCodeAt(index - 1);
+  if (last >= 0xdc00 && last <= 0xdfff && index >= 2) {
+    const lead = input.charCodeAt(index - 2);
+    if (lead >= 0xd800 && lead <= 0xdbff) {
+      return { cp: input.codePointAt(index - 2)!, start: index - 2 };
+    }
+  }
+  return { cp: last, start: index - 1 };
+}
+
 function isEmojiJoiner(input: string, i: number, cp: number): boolean {
   if (cp !== 0x200d && cp !== 0xfe0f && cp !== 0xfe0e) return false;
-  const before = String.fromCodePoint(input.codePointAt(i - 1) ?? 0x20);
-  const beforePair = i >= 2 ? String.fromCodePoint(input.codePointAt(i - 2) ?? 0x20) : " ";
-  return PICTOGRAPHIC.test(before) || PICTOGRAPHIC.test(beforePair) || /[\u{1F3FB}-\u{1F3FF}\u{FE0F}]/u.test(beforePair);
+  if (cp === 0xfe0f && /[0-9#*]/.test(input[i - 1] ?? "") && input.codePointAt(i + 1) === 0x20e3) return true;
+  const prev = prevCodePoint(input, i);
+  if (prev === undefined) return false;
+  if (PICTOGRAPHIC.test(String.fromCodePoint(prev.cp))) return true;
+  if (cp === 0x200d && (prev.cp === 0xfe0f || (prev.cp >= 0x1f3fb && prev.cp <= 0x1f3ff))) {
+    const base = prevCodePoint(input, prev.start);
+    return base !== undefined && PICTOGRAPHIC.test(String.fromCodePoint(base.cp));
+  }
+  return false;
 }
 
 function stripInvisible(input: string): string {
@@ -456,7 +504,7 @@ function dedupe(findings: RawFinding[]): RawFinding[] {
   return out;
 }
 
-function overallRisk(findings: readonly Finding[]): Risk {
+function overallRisk(findings: readonly Pick<Finding, "severity" | "category">[]): Risk {
   let worst: Risk = "none";
   for (const f of findings) if (RANK[f.severity] > RANK[worst]) worst = f.severity;
   // Independent medium-or-worse signals in different categories reinforce each other.

@@ -70,6 +70,16 @@ export function normalize(input: string): Normalized {
   let pendingSpace: "" | " " | "\n" = "";
   let pendingAt = 0;
 
+  const flushSpace = (before: number) => {
+    if (pendingSpace === "") return;
+    if (text.length > 0) {
+      text += pendingSpace;
+      starts.push(pendingAt);
+      ends.push(before);
+    }
+    pendingSpace = "";
+  };
+
   for (let i = 0; i < input.length; ) {
     const cp = input.codePointAt(i)!;
     const size = cp > 0xffff ? 2 : 1;
@@ -86,20 +96,34 @@ export function normalize(input: string): Normalized {
       i = end;
       continue;
     }
-    if (pendingSpace !== "") {
-      if (text.length > 0) {
-        text += pendingSpace;
-        starts.push(pendingAt);
-        ends.push(i);
-      }
-      pendingSpace = "";
-    }
     const folded = fold(ch);
-    text += folded;
-    // One entry per UTF-16 code unit, so astral characters (emoji) keep the map aligned.
-    for (let k = 0; k < folded.length; k++) {
+    if (folded.length === 0) {
+      i = end;
+      continue;
+    }
+    if (folded.length === 1 && !/\s/u.test(folded)) {
+      flushSpace(i);
+      text += folded;
       starts.push(i);
       ends.push(end);
+      i = end;
+      continue;
+    }
+    for (const fch of folded) {
+      if (/\s/u.test(fch)) {
+        if (pendingSpace === "") {
+          pendingAt = i;
+          pendingSpace = " ";
+        }
+        continue;
+      }
+      flushSpace(i);
+      text += fch;
+      // One entry per UTF-16 code unit, so astral characters (emoji) keep the map aligned.
+      for (let k = 0; k < fch.length; k++) {
+        starts.push(i);
+        ends.push(end);
+      }
     }
     i = end;
   }
