@@ -1,6 +1,6 @@
 {
   "name": "injection-scan",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Flag prompt-injection attempts in tool results, web pages and files before an AI agent reads them. Hidden-text detection, sanitizing and wrapping helpers. Zero dependencies.",
   "keywords": [
     "prompt-injection",

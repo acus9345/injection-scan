@@ -1,6 +1,11 @@
-# Changelog
+﻿# Changelog
 
 All notable changes to this project are documented here. This project follows [Semantic Versioning](https://semver.org/).
+
+## [0.1.1] - 2026-11-25
+
+### Fixed
+- Fix maxFindings risk calculation, nested/void/comment HTML sanitization, emoji/black-flag Unicode handling, space-folding normalization, and async stdin reading.
 
 ## [0.1.0] - 2026-10-18
 
